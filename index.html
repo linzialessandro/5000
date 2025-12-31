@@ -1,77 +1,75 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>5000 - Sketches</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Patrick+Hand&display=swap" rel="stylesheet">
-    <script>
-      tailwind.config = {
-        theme: {
-          extend: {
-            colors: {
-              paper: '#FDFBF7',
-              accent: '#F9E076',
-              danger: '#FF8E8E',
-              interaction: '#6ABCB3',
-              ink: '#4A4A4A',
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>5000 - Sketches</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Patrick+Hand&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            paper: '#FDFBF7',
+            accent: '#F9E076',
+            danger: '#FF8E8E',
+            interaction: '#6ABCB3',
+            ink: '#4A4A4A',
+          },
+          fontFamily: {
+            hand: ['"Patrick Hand"', 'cursive'],
+          },
+          animation: {
+            'shake': 'shake 0.5s cubic-bezier(.36,.07,.19,.97) both',
+            'float': 'float 2s ease-out forwards',
+          },
+          keyframes: {
+            shake: {
+              '10%, 90%': { transform: 'translate3d(-1px, 0, 0) rotate(-1deg)' },
+              '20%, 80%': { transform: 'translate3d(2px, 0, 0) rotate(2deg)' },
+              '30%, 50%, 70%': { transform: 'translate3d(-4px, 0, 0) rotate(-4deg)' },
+              '40%, 60%': { transform: 'translate3d(4px, 0, 0) rotate(4deg)' }
             },
-            fontFamily: {
-              hand: ['"Patrick Hand"', 'cursive'],
-            },
-            animation: {
-              'shake': 'shake 0.5s cubic-bezier(.36,.07,.19,.97) both',
-              'float': 'float 2s ease-out forwards',
-            },
-            keyframes: {
-              shake: {
-                '10%, 90%': { transform: 'translate3d(-1px, 0, 0) rotate(-1deg)' },
-                '20%, 80%': { transform: 'translate3d(2px, 0, 0) rotate(2deg)' },
-                '30%, 50%, 70%': { transform: 'translate3d(-4px, 0, 0) rotate(-4deg)' },
-                '40%, 60%': { transform: 'translate3d(4px, 0, 0) rotate(4deg)' }
-              },
-              float: {
-                '0%': { transform: 'translateY(0) scale(1)', opacity: '1' },
-                '100%': { transform: 'translateY(-50px) scale(1.2)', opacity: '0' }
-              }
+            float: {
+              '0%': { transform: 'translateY(0) scale(1)', opacity: '1' },
+              '100%': { transform: 'translateY(-50px) scale(1.2)', opacity: '0' }
             }
           }
         }
       }
-    </script>
-    <style>
-      body {
-        background-color: #FDFBF7;
-        font-family: 'Patrick Hand', cursive;
-        color: #4A4A4A;
-        -webkit-font-smoothing: antialiased;
-        overflow: hidden; /* Prevent pull-to-refresh on mobile */
-      }
-      /* Custom Scrollbar for scoreboard */
-      ::-webkit-scrollbar {
-        width: 6px;
-      }
-      ::-webkit-scrollbar-track {
-        background: transparent;
-      }
-      ::-webkit-scrollbar-thumb {
-        background: #e5e5e5;
-        border-radius: 10px;
-      }
-    </style>
-  <script type="importmap">
-{
-  "imports": {
-    "react": "https://esm.sh/react@^19.2.3",
-    "react/": "https://esm.sh/react@^19.2.3/",
-    "react-dom/": "https://esm.sh/react-dom@^19.2.3/"
-  }
-}
-</script>
+    }
+  </script>
+  <style>
+    body {
+      background-color: #FDFBF7;
+      font-family: 'Patrick Hand', cursive;
+      color: #4A4A4A;
+      -webkit-font-smoothing: antialiased;
+      overflow: hidden;
+      /* Prevent pull-to-refresh on mobile */
+    }
+
+    /* Custom Scrollbar for scoreboard */
+    ::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: #e5e5e5;
+      border-radius: 10px;
+    }
+  </style>
 </head>
-  <body>
-    <div id="root"></div>
-  <script type="module" src="/index.tsx"></script>
+
+<body>
+  <div id="root"></div>
+  <script type="module" src="./index.tsx"></script>
 </body>
+
 </html>
