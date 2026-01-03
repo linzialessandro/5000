@@ -1,43 +1,74 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# 5000 — Online Multiplayer Dice
 
-# 5000 - Sketches
+A premium, hand-drawn-style dice game built as a static PWA. Real-time multiplayer via Firebase Realtime Database + Anonymous Auth, hosted on GitHub Pages.
 
-A cozy, hand-drawn pass-and-play dice game inspired by Florence. First player to reach exactly 5000 points wins.
+## Features
 
-## Game Features
-- **Hand-drawn Aesthetic:** Beautiful sketch-style UI with a paper texture.
-- **Local Multiplayer:** Pass-and-play setup for 2 or more players.
-- **Dynamic Scoring:** Real-time calculation of points based on dice combinations.
-- **Competitive Rules:** Includes "Bumping" (sending others back to zero) and "Hot Dice" (extra rolls).
+- **Real-Time Multiplayer** — Create/join rooms with password protection.
+- **Presence Tracking** — See who's online/offline in real-time.
+- **Authoritative Turns** — Only the current player can roll, bank, or pass.
+- **In-Room Chat** — Send messages to all room members.
+- **PWA** — Installable on mobile, works offline for the shell.
 
-## How to Play
-1. **Roll:** Roll the 5 dice to start your turn.
-2. **Scoring:** 
-   - **Triples:** Get three of a kind for big points (e.g., Triple 'A' is 1000 pts).
-   - **Singles:** 'A' is worth 100 pts, 'K' is worth 50 pts.
-3. **Bank or Roll:** After a scoring roll, you can either **Bank** your points to end your turn or **Roll Remaining** dice to try for more.
-4. **Farkle:** If a roll contains no scoring dice, you lose all points accumulated in that turn!
-5. **Hot Dice:** If all 5 dice contribute to your score, you can roll them all again and keep your accumulated points.
-6. **Bumping:** If you bank your points and your new total matches another player's score, they are "bumped" back to 0!
-7. **Winning:** You must reach **exactly 5000** points. If your bank takes you over 5000, you "boomerang" and your score remains unchanged for that turn.
+## Rules Summary
 
-## Getting Started
+| Category | Details |
+|----------|---------|
+| **Objective** | First to reach **exactly 5000** wins. |
+| **Scoring** | A=100, K=50 (singles). Triples score big (AAA=1000, KKK=500, etc). |
+| **600 Rule** | You must bank ≥600 in one turn to get on the board. |
+| **Farkle** | Roll 0 points = lose turn score, pass. |
+| **Hot Dice** | All 5 dice score = reset and keep rolling. |
+| **Bump** | Bank the same total as someone else? They reset to 0. |
 
-### Prerequisites
-- **Node.js** (v18 or higher recommended)
+## Tech Stack
 
-### Installation
-1.  **Clone the repository** (if applicable) or navigate to the project folder.
-2.  **Install dependencies:**
-    ```bash
-    npm install
-    ```
+- **Frontend:** Vanilla JS, HTML5, CSS3 (no build step).
+- **Backend:** Firebase 9 (Realtime Database, Anonymous Auth).
+- **Hosting:** GitHub Pages via GitHub Actions.
 
-### Running Locally
-To start the development server:
-```bash
-npm run dev
-```
-The app will be available at `http://localhost:3000`.
+## Local Development
+
+1. Copy `config.example.js` → `config.js` and fill in your Firebase credentials.
+2. Run a local server:
+   ```bash
+   python3 -m http.server 8080
+   ```
+3. Open http://localhost:8080
+
+## Deployment
+
+Automated via GitHub Actions on push to `main`.
+
+### Required GitHub Secrets
+
+Set these in **Settings → Secrets → Actions**:
+
+- `FIREBASE_API_KEY`
+- `FIREBASE_AUTH_DOMAIN`
+- `FIREBASE_DATABASE_URL`
+- `FIREBASE_PROJECT_ID`
+- `FIREBASE_STORAGE_BUCKET`
+- `FIREBASE_MESSAGING_SENDER_ID`
+- `FIREBASE_APP_ID`
+- `FIREBASE_MEASUREMENT_ID`
+
+## Firebase Setup
+
+1. Enable **Anonymous Authentication** in Firebase Console.
+2. Deploy `firebase.rules.json` to your Realtime Database via Firebase Console or CLI.
+
+## Manual Test Checklist
+
+- [ ] Create room → join from another device → host can start, others cannot.
+- [ ] After start, new joins are rejected.
+- [ ] Non-turn player cannot roll or bank.
+- [ ] Bank disabled if total < 600 and player.score == 0.
+- [ ] Bump resets other player to 0.
+- [ ] Overshoot (> 5000) passes turn without updating score.
+- [ ] Chat messages appear in real-time with proper escaping.
+- [ ] Presence dot updates on disconnect.
+
+## License
+
+MIT

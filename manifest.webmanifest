@@ -1,0 +1,17 @@
+{
+    "name": "5000 - Multiplayer Dice",
+    "short_name": "5000",
+    "start_url": "./",
+    "display": "standalone",
+    "background_color": "#fdf6e3",
+    "theme_color": "#fdf6e3",
+    "description": "Online multiplayer poker dice game.",
+    "icons": [
+        {
+            "src": "https://cdn-icons-png.flaticon.com/512/3602/3602446.png",
+            "sizes": "512x512",
+            "type": "image/png",
+            "purpose": "any maskable"
+        }
+    ]
+}
