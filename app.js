@@ -15,7 +15,7 @@ let db, auth, user, roomId, roomData, unsub = [], rolling = false, chatOpen = fa
 let lastSeenChatAt = 0, chatMessages = null, updateLastSeenDebounce = null;
 
 // Version Indicator
-document.title = "5000 (v18)";
+document.title = "5000 (v19)";
 
 
 function uuid() { return crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now().toString(36); }
@@ -126,7 +126,13 @@ function renderGame() {
     ctrls.innerHTML = '';
     if (roomData.status === 'finished') {
         const w = roomData.players?.[roomData.winnerUid];
-        ctrls.innerHTML = `<div class="msg">${esc(w?.name || '?')} wins! 🎉</div><button class="btn btn-red" id="btn-leave-game" onclick="window.leaveRoom()">Leave</button>`;
+        const isHost = user && roomData.hostUid === user.uid;
+        let finishedHtml = `<div class="msg">${esc(w?.name || '?')} wins! 🎉</div>`;
+        if (isHost) {
+            finishedHtml += `<button class="btn btn-green" id="btn-play-again" onclick="window.restartGame()">Play Again</button>`;
+        }
+        finishedHtml += `<button class="btn btn-red" id="btn-leave-game" onclick="window.leaveRoom()">Leave</button>`;
+        ctrls.innerHTML = finishedHtml;
     } else if (isMyTurn) {
         let html = '';
         const pts = (g.turnScore || 0) + (g.rollScore || 0);
@@ -153,6 +159,7 @@ function renderGame() {
 
 
 // Expose for inline HTML events
+window.restartGame = restartGame;
 window.handleRoll = handleRoll;
 window.handleBank = handleBank;
 window.leaveRoom = leaveRoom;
@@ -447,6 +454,38 @@ async function startGame() {
         cur.turnIndex = 0;
         cur.turnUid = cur.playerOrder?.['0'] || user.uid;
         cur.game.message = (cur.players?.[cur.turnUid]?.name || 'Player') + "'s Turn";
+        return cur;
+    });
+}
+
+async function restartGame() {
+    if (!roomId || !user || roomData?.hostUid !== user.uid) return;
+    const actionId = uuid();
+    await runTransaction(ref(db, `rooms/${roomId}`), cur => {
+        if (cur === null) return cur;
+        if (cur.status !== 'finished' || cur.lastActionId === actionId) return;
+        cur.lastActionId = actionId;
+
+        // Reset game state
+        cur.status = 'waiting';
+        cur.winnerUid = null;
+        cur.turnIndex = 0;
+        cur.turnUid = cur.playerOrder?.['0'] || user.uid;
+
+        // Reset all player scores
+        Object.keys(cur.players).forEach(uid => {
+            cur.players[uid].score = 0;
+        });
+
+        // Reset game data
+        cur.game = {
+            dice: Array(NUM_DICE).fill(0).map(() => ({ value: '6', held: false, scoring: false })),
+            turnScore: 0,
+            rollScore: 0,
+            rollCount: 0,
+            message: 'Waiting...'
+        };
+
         return cur;
     });
 }
