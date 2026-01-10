@@ -12,9 +12,11 @@ const NUM_DICE = 5;
 const WIN = 5000;
 
 let db, auth, user, roomId, roomData, unsub = [], rolling = false, chatOpen = false;
+let lastSeenChatAt = 0, chatMessages = null, updateLastSeenDebounce = null;
 
 // Version Indicator
-document.title = "5000 (v17)";
+document.title = "5000 (v18)";
+
 
 function uuid() { return crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now().toString(36); }
 
@@ -416,6 +418,12 @@ function enterRoom(code, name) {
     unsub.push(onValue(roomRef, snap => { roomData = snap.val(); render(); }));
     const chatRef = ref(db, `rooms/${code}/chat/messages`);
     unsub.push(onValue(chatRef, snap => { renderChat(snap.val()); }));
+    const chatReadRef = ref(db, `rooms/${code}/chatReads/${user.uid}`);
+    onValue(chatReadRef, snap => {
+        const data = snap.val();
+        lastSeenChatAt = data?.lastSeenAt || 0;
+        updateUnreadBadge();
+    }, { onlyOnce: true });
 }
 
 function leaveRoom() {
@@ -443,6 +451,14 @@ async function startGame() {
     });
 }
 
+function updateLastSeenAt() {
+    if (!roomId || !user) return;
+    if (updateLastSeenDebounce) clearTimeout(updateLastSeenDebounce);
+    updateLastSeenDebounce = setTimeout(() => {
+        set(ref(db, `rooms/${roomId}/chatReads/${user.uid}`), { lastSeenAt: Date.now() }).catch(e => console.warn('chatReads write failed', e));
+    }, 500);
+}
+
 async function sendChat() {
     const input = $('#chat-input');
     const text = input.value.trim();
@@ -453,19 +469,37 @@ async function sendChat() {
 }
 
 function renderChat(msgs) {
+    chatMessages = msgs;
     const box = $('#chat-msgs');
     box.innerHTML = '';
-    if (!msgs) return;
-    Object.values(msgs).sort((a, b) => a.createdAt - b.createdAt).slice(-100).forEach(m => {
+    if (!msgs) { updateUnreadBadge(); return; }
+    const sorted = Object.values(msgs).sort((a, b) => a.createdAt - b.createdAt).slice(-100);
+    sorted.forEach(m => {
         const div = document.createElement('div');
         div.className = 'chat-msg';
         div.innerHTML = `<b>${esc(m.senderName)}:</b> ${esc(m.text)}`;
         box.appendChild(div);
     });
     box.scrollTop = box.scrollHeight;
+    updateUnreadBadge();
 }
 
-function toggleChat() { $('#chat-drawer').classList.toggle('open'); chatOpen = !chatOpen; }
+function updateUnreadBadge() {
+    const trigger = $('#chat-trigger');
+    if (!trigger || !user) return;
+    if (!chatMessages || chatOpen) { trigger.classList.remove('unread'); return; }
+    const unread = Object.values(chatMessages).filter(m => m.createdAt > lastSeenChatAt && m.senderUid !== user.uid).length;
+    trigger.classList.toggle('unread', unread > 0);
+}
+
+function toggleChat() {
+    $('#chat-drawer').classList.toggle('open');
+    chatOpen = !chatOpen;
+    if (chatOpen) {
+        updateLastSeenAt();
+        $('#chat-trigger').classList.remove('unread');
+    }
+}
 
 function showRules() { $('#modal-rules').classList.remove('hidden'); }
 function hideRules() { $('#modal-rules').classList.add('hidden'); }

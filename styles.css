@@ -2,12 +2,12 @@
     --paper: #0d0f14;
     --ink: #e0e6ed;
     --ink-light: #94a3b8;
-    --red: #ff3366;
-    --green: #00ff9d;
-    --blue: #00ccff;
-    --yellow: #ffee00;
-    --accent: #d946ef;
-    --shadow: rgba(0, 255, 255, 0.2);
+    --red: #e84368;
+    --green: #3dd98c;
+    --blue: #3bb5d8;
+    --yellow: #f0d860;
+    --accent: #c05bdf;
+    --shadow: rgba(59, 181, 216, 0.2);
     --border: 2px solid var(--blue);
 }
 
@@ -307,6 +307,19 @@ input:focus {
     z-index: 100;
     box-shadow: 3px 3px 0 var(--ink);
     cursor: pointer;
+}
+
+.chat-trigger.unread::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    width: 14px;
+    height: 14px;
+    background: var(--red);
+    border-radius: 50%;
+    border: 2px solid #fff;
+    box-shadow: 0 0 6px var(--red);
 }
 
 .chat-msgs {
