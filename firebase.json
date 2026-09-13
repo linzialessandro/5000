@@ -1,5 +1,6 @@
 {
   "database": {
-    "rules": "firebase.rules.json"
+    "rules": "firebase.rules.json",
+    "instance": "project-4459811601599530195-default-rtdb"
   }
 }

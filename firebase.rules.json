@@ -1,9 +1,62 @@
 {
     "rules": {
+        ".read": false,
+        ".write": false,
         "rooms": {
             "$roomId": {
-                ".read": "auth != null",
-                ".write": "auth != null && (!data.exists() || data.child('players').child(auth.uid).exists() || newData.child('players').child(auth.uid).exists())"
+                ".read": "auth != null && (data.child('players').child(auth.uid).exists() || data.child('status').val() === 'waiting')",
+                ".write": "auth != null && $roomId.length >= 4 && $roomId.length <= 10 && ((!data.exists() && newData.exists() && newData.child('hostUid').val() === auth.uid && newData.child('players').child(auth.uid).exists() && newData.child('status').val() === 'waiting') || (data.exists() && newData.exists() && data.child('players').child(auth.uid).exists()) || (data.exists() && newData.exists() && data.child('status').val() === 'waiting' && newData.child('status').val() === 'waiting' && newData.child('players').child(auth.uid).exists() && !newData.child('playerOrder').child('6').exists() && newData.child('passHash').val() === data.child('passHash').val() && newData.child('hostUid').val() === data.child('hostUid').val()))",
+                ".validate": "newData.hasChildren(['hostUid', 'passHash', 'status', 'players', 'game'])",
+                "hostUid": {
+                    ".validate": "newData.isString() && newData.val().length > 0 && (!data.exists() || newData.val() === data.val())"
+                },
+                "passHash": {
+                    ".validate": "newData.isString() && newData.val().length === 64 && (!data.exists() || newData.val() === data.val())"
+                },
+                "status": {
+                    ".validate": "newData.val() === 'waiting' || newData.val() === 'playing' || newData.val() === 'finished'"
+                },
+                "createdAt": {
+                    ".validate": "newData.isNumber()"
+                },
+                "turnIndex": {
+                    ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 6"
+                },
+                "turnUid": {
+                    ".validate": "newData.isString()"
+                },
+                "lastActionId": {
+                    ".validate": "newData.isString()"
+                },
+                "winnerUid": {
+                    ".validate": "newData.val() == null || newData.isString()"
+                },
+                "players": {
+                    ".validate": "newData.hasChildren()",
+                    "$uid": {
+                        ".validate": "newData.hasChildren(['name', 'score']) && newData.child('name').isString() && newData.child('name').val().length > 0 && newData.child('name').val().length <= 20 && newData.child('score').isNumber() && newData.child('score').val() >= 0 && newData.child('score').val() <= 5000"
+                    }
+                },
+                "game": {
+                    ".validate": "newData.hasChildren(['dice', 'turnScore', 'rollScore', 'rollCount']) && newData.child('turnScore').isNumber() && newData.child('rollScore').isNumber() && newData.child('rollCount').isNumber() && newData.child('rollCount').val() >= 0"
+                },
+                "chat": {
+                    "messages": {
+                        "$msgId": {
+                            ".validate": "data.exists() || (newData.child('senderUid').val() === auth.uid && newData.child('text').isString() && newData.child('text').val().length > 0 && newData.child('text').val().length <= 200 && newData.child('senderName').isString() && newData.child('senderName').val().length > 0 && newData.child('senderName').val().length <= 20 && newData.child('createdAt').isNumber())"
+                        }
+                    }
+                },
+                "presence": {
+                    "$uid": {
+                        ".validate": "newData.val() == null || $uid === auth.uid || data.exists()"
+                    }
+                },
+                "chatReads": {
+                    "$uid": {
+                        ".validate": "newData.val() == null || $uid === auth.uid || data.exists()"
+                    }
+                }
             }
         }
     }
