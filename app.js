@@ -10,6 +10,8 @@ const FACES = ['6', '7', 'J', 'Q', 'K', 'A'];
 const SCORES = { TRIPLE_A: 1000, TRIPLE_K: 500, TRIPLE_Q: 400, TRIPLE_J: 300, TRIPLE_7: 200, TRIPLE_6: 100, SINGLE_A: 100, SINGLE_K: 50 };
 const NUM_DICE = 5;
 const WIN = 5000;
+const ROOM_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+function roomExpiresAt() { return Date.now() + ROOM_TTL_MS; }
 const ROLL_FRAMES = Array.from({ length: 14 }, (_, i) => `assets/roll/${String(i + 1).padStart(2, '0')}.png`);
 const DIE_REST = 'assets/die.png';
 const ICONS = {
@@ -156,11 +158,17 @@ function showScreen(id) {
 }
 
 function normalizeDice(raw) {
-    if (Array.isArray(raw)) return raw;
-    if (raw && typeof raw === 'object') {
-        return Array(NUM_DICE).fill(0).map((_, i) => raw[i] || { value: '6', held: false, scoring: false });
-    }
-    return Array(NUM_DICE).fill(0).map(() => ({ value: '6', held: false, scoring: false }));
+    const blank = () => ({ value: '6', held: false, scoring: false });
+    if (!raw || typeof raw !== 'object') return Array(NUM_DICE).fill(0).map(blank);
+    return Array(NUM_DICE).fill(0).map((_, i) => {
+        const d = raw[i];
+        if (!d || typeof d !== 'object') return blank();
+        return {
+            value: FACES.includes(d.value) ? d.value : '6',
+            held: !!d.held,
+            scoring: !!d.scoring
+        };
+    });
 }
 
 function dieEl(i) {
@@ -457,11 +465,16 @@ window.toggleHold = toggleHold;
 async function toggleHold(i) {
     const g = roomData?.game;
     if (!g || rolling) return;
-    const d = g.dice[i];
-    if (!d.scoring) return;
+    const dice = normalizeDice(g.dice);
+    const d = dice[i];
+    if (!d || !d.scoring) return;
     try {
         d.held = !d.held;
-        updateDice(normalizeDice(g.dice));
+        if (Array.isArray(g.dice) || (g.dice && typeof g.dice === 'object')) {
+            if (!g.dice[i]) g.dice[i] = d;
+            else g.dice[i].held = d.held;
+        }
+        updateDice(dice);
         haptic(8);
         await runTransaction(ref(db, `rooms/${roomId}/game/dice/${i}/held`), cur => {
             return !cur;
@@ -478,14 +491,19 @@ async function handleRoll() {
 
     rolling = true;
     document.body.classList.add('rolling');
+    const unlock = setTimeout(() => {
+        rolling = false;
+        document.body.classList.remove('rolling');
+    }, 8000);
     const g0 = roomData?.game || {};
-    tumbleUnheld(normalizeDice(g0.dice));
-    sfxRoll();
-    haptic(18);
-    renderControls(g0, true, roomData.players?.[user.uid]);
     const started = performance.now();
 
     try {
+        tumbleUnheld(normalizeDice(g0.dice));
+        sfxRoll();
+        haptic(18);
+        renderControls(g0, true, roomData.players?.[user.uid]);
+
         const actionId = uuid();
         const res = await runTransaction(ref(db, `rooms/${roomId}`), cur => {
             if (cur === null) return cur;
@@ -502,21 +520,12 @@ async function handleRoll() {
                 g.turnScore = (g.turnScore || 0) + (g.rollScore || 0);
             }
 
-            let diceRaw = g.dice;
-            let dice = [];
-
-            if (Array.isArray(diceRaw)) {
-                dice = diceRaw;
-            } else if (diceRaw && typeof diceRaw === 'object') {
-                dice = Array(NUM_DICE).fill(0).map((_, i) => diceRaw[i] || { value: '6', held: false, scoring: false });
-            } else {
-                dice = Array(NUM_DICE).fill(0).map(() => ({ value: '6', held: false, scoring: false }));
-            }
+            let dice = normalizeDice(g.dice);
 
             const allHeld = dice.every(d => d.held);
             if (allHeld) dice = dice.map(d => ({ ...d, held: false }));
 
-            dice = dice.map(d => d.held ? { ...d, scoring: false } : { value: FACES[Math.floor(Math.random() * 6)], held: false, scoring: false });
+            dice = dice.map(d => d.held ? { value: d.value, held: true, scoring: false } : { value: FACES[Math.floor(Math.random() * 6)], held: false, scoring: false });
 
             const { score, scoringIdx } = calcScore(dice);
             scoringIdx.forEach(i => {
@@ -527,6 +536,7 @@ async function handleRoll() {
             g.dice = dice;
             g.rollScore = score;
             g.rollCount = (g.rollCount || 0) + 1;
+            g.turnScore = g.turnScore || 0;
 
             if (score === 0) {
                 g.message = 'Farkle! 0 Points.';
@@ -555,8 +565,9 @@ async function handleRoll() {
 
     } catch (e) {
         console.error('Roll failed exception:', e);
-        toast('Roll failed');
+        toast(e?.code === 'PERMISSION_DENIED' ? 'Throw blocked by the table' : 'Roll failed');
     } finally {
+        clearTimeout(unlock);
         rolling = false;
         document.body.classList.remove('rolling');
         render({ land: true });
@@ -566,24 +577,34 @@ async function handleRoll() {
 }
 
 async function handleBank() {
-    if (rolling || !roomId || !user) return;
+    if (!roomId || !user) return;
+    if (rolling) {
+        rolling = false;
+        document.body.classList.remove('rolling');
+    }
     const actionId = uuid();
-    await runTransaction(ref(db, `rooms/${roomId}`), cur => {
-        if (cur === null) return cur;
-        if (cur.turnUid !== user.uid || cur.lastActionId === actionId) return;
-        cur.lastActionId = actionId;
-        const g = cur.game;
-        const pts = (g.turnScore || 0) + (g.rollScore || 0);
-        const p = cur.players[user.uid];
-        if (pts === 0 || (p.score === 0 && pts < 600)) { advanceTurn(cur); return cur; }
-        let newTotal = p.score + pts;
-        if (newTotal > WIN) { advanceTurn(cur); return cur; }
-        p.score = newTotal;
-        Object.keys(cur.players).forEach(uid => { if (uid !== user.uid && cur.players[uid].score === newTotal) cur.players[uid].score = 0; });
-        if (newTotal === WIN) { cur.status = 'finished'; cur.winnerUid = user.uid; }
-        advanceTurn(cur);
-        return cur;
-    });
+    try {
+        await runTransaction(ref(db, `rooms/${roomId}`), cur => {
+            if (cur === null) return cur;
+            if (cur.turnUid !== user.uid || cur.lastActionId === actionId) return;
+            cur.lastActionId = actionId;
+            const g = cur.game || {};
+            const pts = (g.turnScore || 0) + (g.rollScore || 0);
+            const p = cur.players?.[user.uid];
+            if (!p) return;
+            if (pts === 0 || (p.score === 0 && pts < 600)) { advanceTurn(cur); return cur; }
+            let newTotal = p.score + pts;
+            if (newTotal > WIN) { advanceTurn(cur); return cur; }
+            p.score = newTotal;
+            Object.keys(cur.players).forEach(uid => { if (uid !== user.uid && cur.players[uid].score === newTotal) cur.players[uid].score = 0; });
+            if (newTotal === WIN) { cur.status = 'finished'; cur.winnerUid = user.uid; }
+            advanceTurn(cur);
+            return cur;
+        });
+    } catch (e) {
+        console.error('Bank failed', e);
+        toast('Could not bank that throw');
+    }
 }
 
 function advanceTurn(cur) {
@@ -619,6 +640,7 @@ async function createRoom() {
         passHash: hash,
         status: 'waiting',
         createdAt: Date.now(),
+        expiresAt: roomExpiresAt(),
         turnUid: user.uid,
         turnIndex: 0,
         playerOrder: { '0': user.uid },
@@ -657,6 +679,7 @@ async function joinRoom() {
         const snap = await get(ref(db, `rooms/${code}`));
         if (!snap.exists()) return toast('No room with that code');
         const val = snap.val();
+        if (val.expiresAt && val.expiresAt <= Date.now()) return toast('That room expired');
         if (val.status !== 'waiting') return toast('That game already started');
         if (val.passHash !== hash) return toast('Wrong password');
 
@@ -674,6 +697,7 @@ async function joinRoom() {
                 order[String(len)] = user.uid;
                 cur.playerOrder = order;
             }
+            cur.expiresAt = roomExpiresAt();
             return cur;
         });
 
@@ -753,6 +777,7 @@ async function startGame() {
         cur.status = 'playing';
         cur.turnIndex = 0;
         cur.turnUid = cur.playerOrder?.['0'] || user.uid;
+        cur.expiresAt = roomExpiresAt();
         cur.game.message = (cur.players?.[cur.turnUid]?.name || 'Player') + "'s Turn";
         return cur;
     });
@@ -782,6 +807,7 @@ async function restartGame() {
             rollCount: 0,
             message: 'Waiting...'
         };
+        cur.expiresAt = roomExpiresAt();
 
         return cur;
     });
