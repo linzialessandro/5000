@@ -1,17 +1,24 @@
 {
-    "name": "5000 - Multiplayer Dice",
+    "name": "5000 — Firenze",
     "short_name": "5000",
     "start_url": "./",
     "display": "standalone",
-    "background_color": "#fdf6e3",
-    "theme_color": "#fdf6e3",
-    "description": "Online multiplayer poker dice game.",
+    "orientation": "portrait",
+    "background_color": "#1a0e0a",
+    "theme_color": "#1a0e0a",
+    "description": "Florentine multiplayer dice. First to exactly 5000 wins.",
     "icons": [
         {
-            "src": "https://cdn-icons-png.flaticon.com/512/3602/3602446.png",
+            "src": "assets/icon-512.jpg",
             "sizes": "512x512",
+            "type": "image/jpeg",
+            "purpose": "any"
+        },
+        {
+            "src": "assets/apple-touch-icon.png",
+            "sizes": "180x180",
             "type": "image/png",
-            "purpose": "any maskable"
+            "purpose": "any"
         }
     ]
 }

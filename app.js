@@ -10,13 +10,24 @@ const FACES = ['6', '7', 'J', 'Q', 'K', 'A'];
 const SCORES = { TRIPLE_A: 1000, TRIPLE_K: 500, TRIPLE_Q: 400, TRIPLE_J: 300, TRIPLE_7: 200, TRIPLE_6: 100, SINGLE_A: 100, SINGLE_K: 50 };
 const NUM_DICE = 5;
 const WIN = 5000;
+const ROLL_FRAMES = Array.from({ length: 14 }, (_, i) => `assets/roll/${String(i + 1).padStart(2, '0')}.png`);
+const DIE_REST = 'assets/die.png';
+const ICONS = {
+    leave: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>',
+    chat: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
+    back: '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>'
+};
 
 let db, auth, user, roomId, roomData, unsub = [], rolling = false, chatOpen = false;
 let lastSeenChatAt = 0, chatMessages = null, updateLastSeenDebounce = null;
+let lastSeenRollCount = -1;
+let prevScores = {};
+let leaveArmed = false;
+let toastTimer = 0;
+let audioCtx = null;
+const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-// Version Indicator
-document.title = "5000 (v19)";
-
+document.title = "5000 — Firenze";
 
 function uuid() { return crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now().toString(36); }
 
@@ -49,20 +60,250 @@ function calcScore(dice) {
     return { score, scoringIdx };
 }
 
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+function haptic(ms) {
+    try { navigator.vibrate && navigator.vibrate(ms); } catch { /* ignore */ }
+}
+
+function getAudio() {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    return audioCtx;
+}
+
+function sfxRoll() {
+    try {
+        const ctx = getAudio();
+        const t = ctx.currentTime;
+        for (let i = 0; i < 5; i++) {
+            const n = Math.floor(ctx.sampleRate * 0.045);
+            const buf = ctx.createBuffer(1, n, ctx.sampleRate);
+            const data = buf.getChannelData(0);
+            for (let j = 0; j < n; j++) data[j] = (Math.random() * 2 - 1) * (1 - j / n);
+            const src = ctx.createBufferSource();
+            src.buffer = buf;
+            const g = ctx.createGain();
+            g.gain.value = 0.07;
+            src.connect(g).connect(ctx.destination);
+            src.start(t + i * 0.055);
+        }
+    } catch { /* ignore */ }
+}
+
+function sfxLand() {
+    try {
+        const ctx = getAudio();
+        const o = ctx.createOscillator();
+        const g = ctx.createGain();
+        o.type = 'triangle';
+        o.frequency.value = 180;
+        g.gain.setValueAtTime(0.05, ctx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
+        o.connect(g).connect(ctx.destination);
+        o.start();
+        o.stop(ctx.currentTime + 0.13);
+    } catch { /* ignore */ }
+}
+
+function toast(msg) {
+    const el = $('#toast');
+    if (!el) return;
+    el.textContent = msg;
+    el.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.remove('show'), 2200);
+}
+
+async function copyText(text) {
+    try {
+        await navigator.clipboard.writeText(text);
+        return true;
+    } catch {
+        const i = document.createElement('input');
+        i.value = text;
+        document.body.appendChild(i);
+        i.select();
+        try { document.execCommand('copy'); } catch { /* ignore */ }
+        i.remove();
+        return true;
+    }
+}
+
+function savedName() {
+    try { return localStorage.getItem('fivek-name') || ''; } catch { return ''; }
+}
+
+function rememberName(name) {
+    try { localStorage.setItem('fivek-name', name); } catch { /* ignore */ }
+}
+
+function setAppHeight() {
+    document.documentElement.style.setProperty('--app-h', `${window.innerHeight}px`);
+}
+
+function syncKeyboardInset() {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+    document.documentElement.style.setProperty('--kb', kb + 'px');
+}
+
 function showScreen(id) {
     $$('.screen').forEach(s => s.classList.remove('active'));
     const el = $('#screen-' + id);
     if (el) el.classList.add('active');
 }
 
-function render() {
+function normalizeDice(raw) {
+    if (Array.isArray(raw)) return raw;
+    if (raw && typeof raw === 'object') {
+        return Array(NUM_DICE).fill(0).map((_, i) => raw[i] || { value: '6', held: false, scoring: false });
+    }
+    return Array(NUM_DICE).fill(0).map(() => ({ value: '6', held: false, scoring: false }));
+}
+
+function dieEl(i) {
+    return document.querySelector(`.die[data-i="${i}"]`);
+}
+
+function mountDice() {
+    const free = $('#dice-free');
+    if (!free || free.dataset.ready === '1') return;
+    if ($$('.die').length === NUM_DICE) {
+        free.dataset.ready = '1';
+        return;
+    }
+    for (let i = 0; i < NUM_DICE; i++) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'die';
+        btn.dataset.i = String(i);
+        btn.setAttribute('aria-label', 'Die ' + (i + 1));
+        btn.innerHTML = `
+      <span class="die-sprite">
+        <img class="die-body" src="${DIE_REST}" alt="" draggable="false">
+        <span class="die-letter">6</span>
+      </span>`;
+        btn.addEventListener('click', () => toggleHold(i));
+        free.appendChild(btn);
+    }
+    free.dataset.ready = '1';
+    ROLL_FRAMES.forEach(src => { const im = new Image(); im.src = src; });
+}
+
+function startDieRoll(el, delay) {
+    if (reduceMotion) return;
+    const img = el.querySelector('.die-body');
+    const letter = el.querySelector('.die-letter');
+    el.classList.add('rolling');
+    el.classList.remove('held', 'dead', 'scoring', 'tappable', 'landing');
+    letter.style.opacity = '0';
+    let f = Math.floor(Math.random() * ROLL_FRAMES.length);
+    const tick = () => {
+        f = (f + 1) % ROLL_FRAMES.length;
+        img.src = ROLL_FRAMES[f];
+    };
+    const go = () => {
+        tick();
+        el._roll = setInterval(tick, 55);
+    };
+    if (delay) el._rollWait = setTimeout(go, delay);
+    else go();
+}
+
+function stopDieRoll(el, value) {
+    if (el._rollWait) { clearTimeout(el._rollWait); el._rollWait = null; }
+    if (el._roll) { clearInterval(el._roll); el._roll = null; }
+    el.classList.remove('rolling');
+    const img = el.querySelector('.die-body');
+    const letter = el.querySelector('.die-letter');
+    if (img) img.src = DIE_REST;
+    if (letter) {
+        letter.textContent = value || '6';
+        letter.classList.toggle('royal', 'AKQJ'.includes(value));
+        letter.style.opacity = '1';
+    }
+}
+
+function tumbleUnheld(dice) {
+    mountDice();
+    const free = $('#dice-free');
+    const allHeld = dice.every(d => d.held);
+    $('#zone-scoring')?.classList.toggle('hidden', allHeld);
+    $('#zone-table')?.classList.remove('hidden');
+    $('#table-hint').textContent = 'Throwing…';
+    dice.forEach((d, i) => {
+        const el = dieEl(i);
+        if (!el) return;
+        if (!allHeld && d.held) return;
+        free.appendChild(el);
+        startDieRoll(el, reduceMotion ? 0 : i * 70);
+    });
+}
+
+function placeDie(el, d, g, isMyTurn) {
+    const canClick = isMyTurn && g.rollCount > 0 && d.scoring && !rolling && roomData.status === 'playing';
+    el.classList.toggle('held', !!d.held);
+    el.classList.toggle('scoring', !!d.scoring);
+    el.classList.toggle('dead', g.rollCount > 0 && !d.held && !d.scoring);
+    el.classList.toggle('tappable', !!canClick);
+    el.disabled = !canClick;
+    const host = d.held ? $('#dice-kept') : $('#dice-free');
+    if (host && el.parentNode !== host) host.appendChild(el);
+    const n = Number(el.dataset.i) + 1;
+    let label = `Die ${n}: ${d.value}`;
+    if (d.held) label += ', scoring';
+    else if (g.rollCount > 0 && !d.scoring) label += ', no score';
+    if (canClick) label += ', tap to throw again';
+    el.setAttribute('aria-label', label);
+}
+
+function updateDice(dice, { incoming = false, land = false } = {}) {
+    mountDice();
+    const g = roomData?.game || {};
+    const isMyTurn = user && roomData.turnUid === user.uid;
+    const allHeld = dice.every(d => d.held);
+    dice.forEach((d, i) => {
+        const el = dieEl(i);
+        if (!el) return;
+        if (rolling && !land && (!d.held || allHeld)) return;
+        const wasRolling = el.classList.contains('rolling') || !!el._roll;
+        stopDieRoll(el, d.value);
+        if ((incoming || land || wasRolling) && !reduceMotion) {
+            el.classList.add('landing');
+            setTimeout(() => el.classList.remove('landing'), 320);
+        }
+        placeDie(el, d, g, isMyTurn);
+    });
+
+    const keptN = dice.filter(d => d.held).length;
+    const deadN = dice.filter(d => !d.held && !d.scoring).length;
+    const scoringZone = $('#zone-scoring');
+    const tableZone = $('#zone-table');
+    const showKept = keptN > 0 && !rolling;
+    const showTable = rolling || keptN < NUM_DICE;
+    scoringZone.classList.toggle('hidden', !showKept);
+    tableZone.classList.toggle('hidden', !showTable);
+    tableZone.classList.toggle('miss', !rolling && g.rollCount > 0 && deadN > 0);
+    const scoringHint = $('#scoring-hint');
+    if (scoringHint) scoringHint.textContent = isMyTurn && dice.some(d => d.scoring) ? '· tap to throw again' : '';
+    const tableHint = $('#table-hint');
+    if (g.rollCount === 0) tableHint.textContent = 'On the table';
+    else if (rolling) tableHint.textContent = 'Throwing…';
+    else if (deadN > 0) tableHint.textContent = 'Did not score';
+    else tableHint.textContent = 'On the table';
+}
+
+function render(opts) {
     if (!roomData) return;
     if (roomData.status === 'waiting') renderLobby();
-    else if (roomData.status === 'playing' || roomData.status === 'finished') renderGame();
+    else if (roomData.status === 'playing' || roomData.status === 'finished') renderGame(opts || {});
 }
 
 function renderLobby() {
     showScreen('lobby');
+    $('#win-overlay').classList.add('hidden');
     $('#lobby-code').textContent = roomId;
     const list = $('#lobby-players');
     list.innerHTML = '';
@@ -73,43 +314,25 @@ function renderLobby() {
         if (!p) return;
         const pres = roomData.presence?.[uid];
         const li = document.createElement('li');
-        li.className = 'player-item hand';
-        li.innerHTML = `<span class="presence ${pres?.state === 'online' ? 'online' : ''}"></span>${esc(p.name)} ${uid === roomData.hostUid ? '(Host)' : ''}`;
+        li.className = 'player-item';
+        li.innerHTML = `<span class="presence ${pres?.state === 'online' ? 'online' : ''}"></span><span>${esc(p.name)}</span>${uid === roomData.hostUid ? '<span class="host-tag">Host</span>' : ''}`;
         list.appendChild(li);
     });
     const isHost = user && roomData.hostUid === user.uid;
     $('#btn-start').classList.toggle('hidden', !isHost);
-    $('#chat-trigger').classList.remove('hidden');
+    showChatTriggers(true);
 }
 
-function renderGame() {
+function renderGame(opts = {}) {
     showScreen('game');
     const g = roomData.game || {};
     const isMyTurn = user && roomData.turnUid === user.uid;
     const turnPlayer = roomData.players?.[roomData.turnUid];
-    $('#turn-label').textContent = isMyTurn ? 'Your Turn' : (turnPlayer?.name || '') + "'s Turn";
+    $('#turn-label').textContent = isMyTurn ? 'Your throw' : (turnPlayer?.name || '') + "'s throw";
     $('#turn-score').textContent = '+' + ((g.turnScore || 0) + (g.rollScore || 0));
-    const diceRow = $('#dice-row');
-    let diceHtml = '';
 
-    // Safety check for dice array
-    let dice = [];
-    if (Array.isArray(g.dice)) dice = g.dice;
-    else if (g.dice && typeof g.dice === 'object') dice = Array(NUM_DICE).fill(0).map((_, i) => g.dice[i] || { value: '6', held: false, scoring: false });
-    else dice = Array(NUM_DICE).fill(0).map(() => ({ value: '6', held: false, scoring: false }));
+    const dice = normalizeDice(g.dice);
 
-    // Debug: Log dice state to see scoring flags
-    console.log('Rendering Dice:', JSON.stringify(dice));
-
-    dice.forEach((d, i) => {
-        const cls = 'die' + (d.held ? ' held' : '') + (d.scoring ? ' scoring' : '') + (rolling && !d.held ? ' rolling' : '');
-        // Allow toggle only if scoring
-        const canClick = isMyTurn && g.rollCount > 0 && d.scoring && !rolling;
-        const onclick = canClick ? `onclick="window.toggleHold(${i})"` : '';
-        diceHtml += `<div class="${cls}" ${onclick}>${d.value}</div>`;
-    });
-    diceRow.innerHTML = diceHtml;
-    $('#game-msg').textContent = g.message || '';
     const cards = $('#score-cards');
     cards.innerHTML = '';
     const order = roomData.playerOrder || {};
@@ -117,63 +340,129 @@ function renderGame() {
         const uid = order[k];
         const p = roomData.players?.[uid];
         if (!p) return;
+        const prev = prevScores[uid];
+        const bumped = prev > 0 && p.score === 0 && uid !== user?.uid;
         const div = document.createElement('div');
-        div.className = 'score-card' + (uid === roomData.turnUid ? ' active' : '');
-        div.innerHTML = `<div class="hand" style="font-size:0.9rem;color:var(--ink-light)">${esc(p.name)}</div><div style="font-weight:bold;font-size:1.2rem">${p.score}</div>`;
+        div.className = 'score-card' + (uid === roomData.turnUid ? ' active' : '') + (bumped ? ' bumped' : '');
+        const pct = Math.min(100, Math.round((p.score / WIN) * 100));
+        div.innerHTML = `<div class="score-name">${esc(p.name)}</div><div class="score-val">${p.score}</div><div class="score-bar"><span style="width:${pct}%"></span></div>`;
         cards.appendChild(div);
+        prevScores[uid] = p.score;
     });
-    const ctrls = $('#game-controls');
-    ctrls.innerHTML = '';
+
+    const msg = g.message || '';
+    const msgEl = $('#game-msg');
+    msgEl.textContent = msg;
+    msgEl.classList.toggle('farkle', /farkle/i.test(msg));
+    msgEl.classList.toggle('hot', /hot dice/i.test(msg));
+
+    const table = $('#dice-table');
+    table.classList.toggle('hot', /hot dice/i.test(msg) && !rolling);
+    table.classList.toggle('farkle', /farkle/i.test(msg) && !rolling);
+
+    const incoming = !rolling && !opts.land && (g.rollCount || 0) > 0 && g.rollCount !== lastSeenRollCount;
+    if (rolling && !opts.land) {
+        renderControls(g, isMyTurn, turnPlayer);
+        showChatTriggers(true);
+        return;
+    }
+    lastSeenRollCount = g.rollCount || 0;
+    if (incoming && !reduceMotion) {
+        tumbleUnheld(dice);
+        sfxRoll();
+        setTimeout(() => {
+            updateDice(normalizeDice(roomData?.game?.dice), { land: true });
+            sfxLand();
+        }, 1050);
+    } else {
+        updateDice(dice, { land: !!opts.land });
+        if (opts.land) sfxLand();
+    }
+
+    renderControls(g, isMyTurn, turnPlayer);
+
+    const win = $('#win-overlay');
     if (roomData.status === 'finished') {
         const w = roomData.players?.[roomData.winnerUid];
+        $('#win-name').textContent = (w?.name || 'A player') + ' takes the palazzo.';
+        const actions = $('#win-actions');
         const isHost = user && roomData.hostUid === user.uid;
-        let finishedHtml = `<div class="msg">${esc(w?.name || '?')} wins! 🎉</div>`;
-        if (isHost) {
-            finishedHtml += `<button class="btn btn-green" id="btn-play-again" onclick="window.restartGame()">Play Again</button>`;
-        }
-        finishedHtml += `<button class="btn btn-red" id="btn-leave-game" onclick="window.leaveRoom()">Leave</button>`;
-        ctrls.innerHTML = finishedHtml;
-    } else if (isMyTurn) {
-        let html = '';
+        actions.innerHTML = '';
+        if (isHost) actions.innerHTML += `<button class="btn btn-green" id="btn-play-again">Play again</button>`;
+        actions.innerHTML += `<button class="btn btn-ghost" id="btn-leave-win">Leave</button>`;
+        const again = $('#btn-play-again');
+        if (again) again.onclick = restartGame;
+        $('#btn-leave-win').onclick = () => confirmLeave(true);
+        win.classList.remove('hidden');
+    } else {
+        win.classList.add('hidden');
+    }
+
+    showChatTriggers(true);
+}
+
+function showChatTriggers(on) {
+    ['#chat-trigger', '#chat-trigger-lobby'].forEach(sel => {
+        const el = $(sel);
+        if (el) el.classList.toggle('hidden', !on);
+    });
+}
+
+function renderControls(g, isMyTurn, turnPlayer) {
+    const ctrls = $('#game-controls');
+    const hint = $('#action-hint');
+    if (roomData.status === 'finished') {
+        ctrls.innerHTML = '';
+        hint.textContent = '';
+        return;
+    }
+    if (isMyTurn) {
         const pts = (g.turnScore || 0) + (g.rollScore || 0);
         const myScore = roomData.players?.[user.uid]?.score || 0;
         const canBank = (myScore === 0 ? pts >= 600 : pts > 0) && g.rollCount > 0 && g.rollScore > 0;
         const isFarkle = g.rollCount > 0 && g.rollScore === 0;
         if (isFarkle) {
-            html += `<button class="btn btn-red" id="btn-pass" onclick="window.handleBank()">Farkle! Pass Turn</button>`;
+            ctrls.innerHTML = `<div class="actions"><button class="btn btn-red span-2" id="btn-pass">Farkle — pass the cup</button></div>`;
+            $('#btn-pass').onclick = handleBank;
+            hint.textContent = 'No scoring dice. The throw is lost.';
         } else {
-            html += `
-        <button class="btn btn-blue" id="btn-roll" onclick="window.handleRoll()">${g.rollCount === 0 ? 'Roll Dice' : 'Roll Remaining'}</button>
-        <button class="btn btn-green" id="btn-bank" onclick="window.handleBank()" ${canBank ? '' : 'disabled'}>Bank ${pts}</button>
-      `;
+            ctrls.innerHTML = `<div class="actions">
+        <button class="btn btn-gold" id="btn-roll" ${rolling ? 'disabled' : ''}>${g.rollCount === 0 ? 'Roll' : 'Roll remaining'}</button>
+        <button class="btn btn-green" id="btn-bank" ${canBank && !rolling ? '' : 'disabled'}>Bank ${pts}</button>
+      </div>`;
+            $('#btn-roll').onclick = handleRoll;
+            $('#btn-bank').onclick = handleBank;
+            if (g.rollCount === 0) hint.textContent = myScore === 0 ? 'Bank 600 in one throw to enter the board.' : 'Throw the ivory.';
+            else if (!canBank && myScore === 0) hint.textContent = `Need ${Math.max(0, 600 - pts)} more to enter.`;
+            else if (diceHaveTappable(g)) hint.textContent = 'Tap a scoring die to throw it again — or bank.';
+            else hint.textContent = 'Roll the rest, or bank this throw.';
         }
-        html += `<button class="btn btn-red" id="btn-leave-game" onclick="window.leaveRoom()" style="margin-top:20px;font-size:1rem;padding:8px">Leave Room</button>`;
-        ctrls.innerHTML = html;
     } else {
-        ctrls.innerHTML = `<div class="msg">Waiting for ${esc(turnPlayer?.name || '?')}...</div><button class="btn btn-red" id="btn-leave-game" onclick="window.leaveRoom()" style="font-size:1rem;padding:8px">Leave Room</button>`;
+        ctrls.innerHTML = `<div class="msg">Waiting on ${esc(turnPlayer?.name || 'the next player')}…</div>`;
+        hint.textContent = '';
     }
-    $('#chat-trigger').classList.remove('hidden');
 }
 
+function diceHaveTappable(g) {
+    const dice = normalizeDice(g.dice);
+    return dice.some(d => d.scoring);
+}
 
-
-
-// Expose for inline HTML events
 window.restartGame = restartGame;
 window.handleRoll = handleRoll;
 window.handleBank = handleBank;
-window.leaveRoom = leaveRoom;
+window.leaveRoom = () => confirmLeave(false);
 window.toggleHold = toggleHold;
 
 async function toggleHold(i) {
     const g = roomData?.game;
     if (!g || rolling) return;
     const d = g.dice[i];
-
-    // Strict rule: Can only hold/unhold dice that are scoring
     if (!d.scoring) return;
-
     try {
+        d.held = !d.held;
+        updateDice(normalizeDice(g.dice));
+        haptic(8);
         await runTransaction(ref(db, `rooms/${roomId}/game/dice/${i}/held`), cur => {
             return !cur;
         });
@@ -183,29 +472,25 @@ async function toggleHold(i) {
 }
 
 async function handleRoll() {
-    // ... existing handleRoll ...
-    // (I will use a separate replace for handleRoll if needed, but I need to make sure toggleHold is exposed first)
-    // actually the replacement range I selected in invalid for just exposing.
-    // I should split this.
-    // I will just refactor renderGame here to use window.toggleHold and expose it at the top.
+    if (rolling) return;
+    if (!roomId) { toast('No room'); return; }
+    if (!user) { toast('Not signed in yet'); return; }
 
-    if (rolling) { console.warn('Roll blocked: rolling'); return; }
-    if (!roomId) { alert('Roll blocked: No Room ID'); return; }
-    if (!user) { alert('Roll blocked: No User'); return; }
-
-    // Optimistic UI updates
     rolling = true;
-    render();
+    document.body.classList.add('rolling');
+    const g0 = roomData?.game || {};
+    tumbleUnheld(normalizeDice(g0.dice));
+    sfxRoll();
+    haptic(18);
+    renderControls(g0, true, roomData.players?.[user.uid]);
+    const started = performance.now();
 
     try {
         const actionId = uuid();
         const res = await runTransaction(ref(db, `rooms/${roomId}`), cur => {
-            if (cur === null) return cur; // Retry
+            if (cur === null) return cur;
 
-            // Debugging checks inside transaction
             if (cur.turnUid !== user.uid) {
-                console.warn('Roll Abort: Not your turn', cur.turnUid, user.uid);
-                // Return undefined to abort, handle in completion
                 return;
             }
             if (cur.lastActionId === actionId) return;
@@ -213,19 +498,16 @@ async function handleRoll() {
             cur.lastActionId = actionId;
             const g = cur.game || {};
 
-            // Fix: Accumulate previous rollScore into turnScore if re-rolling
             if ((g.rollCount || 0) > 0) {
                 g.turnScore = (g.turnScore || 0) + (g.rollScore || 0);
             }
 
-            // Ensure dice array
             let diceRaw = g.dice;
             let dice = [];
 
             if (Array.isArray(diceRaw)) {
                 dice = diceRaw;
             } else if (diceRaw && typeof diceRaw === 'object') {
-                // Firebase sparse array handling
                 dice = Array(NUM_DICE).fill(0).map((_, i) => diceRaw[i] || { value: '6', held: false, scoring: false });
             } else {
                 dice = Array(NUM_DICE).fill(0).map(() => ({ value: '6', held: false, scoring: false }));
@@ -234,11 +516,9 @@ async function handleRoll() {
             const allHeld = dice.every(d => d.held);
             if (allHeld) dice = dice.map(d => ({ ...d, held: false }));
 
-            // Roll unheld dice
             dice = dice.map(d => d.held ? { ...d, scoring: false } : { value: FACES[Math.floor(Math.random() * 6)], held: false, scoring: false });
 
             const { score, scoringIdx } = calcScore(dice);
-            // Auto-hold scoring dice based on user expectation
             scoringIdx.forEach(i => {
                 dice[i].scoring = true;
                 dice[i].held = true;
@@ -260,24 +540,28 @@ async function handleRoll() {
             return cur;
         });
 
-        if (res.committed) {
-            // Success
-        } else {
-            console.error('Roll transaction yielded no commit.', res);
-            // This happens if we returned undefined or other abort
+        if (!res.committed) {
             const val = res.snapshot.val();
             if (val && val.turnUid !== user.uid) {
-                console.warn(`Roll failed: Not your turn! It is ${val.players?.[val.turnUid]?.name}'s turn.`);
+                toast('Not your throw');
             } else {
-                console.warn('Roll failed to commit. Check console for transaction result.');
+                toast('The throw did not take');
             }
         }
 
+        const min = reduceMotion ? 0 : 1050;
+        const wait = min - (performance.now() - started);
+        if (wait > 0) await sleep(wait);
+
     } catch (e) {
         console.error('Roll failed exception:', e);
+        toast('Roll failed');
     } finally {
         rolling = false;
-        render();
+        document.body.classList.remove('rolling');
+        render({ land: true });
+        if (/farkle/i.test(roomData?.game?.message || '')) haptic([40, 40, 40]);
+        else haptic(12);
     }
 }
 
@@ -307,7 +591,6 @@ function advanceTurn(cur) {
     const len = Object.keys(order).length;
     let idx = cur.turnIndex || 0;
     let attempts = 0;
-    // Find next valid player
     while (attempts < len + 1) {
         idx = (idx + 1) % len;
         const uid = order[String(idx)];
@@ -321,18 +604,16 @@ function advanceTurn(cur) {
     }
 }
 
-// ... createRoom, joinRoom, etc same as before but ensure update ...
-
 async function createRoom() {
     const name = $('#create-name').value.trim();
     const pass = $('#create-pass').value.trim();
-    if (!name || name.length > 20) return alert('Name 1-20 chars');
-    if (pass.length < 4) return alert('Password min 4 chars');
-    if (!user) return alert('Auth not ready');
+    if (!name || name.length > 20) return toast('Name must be 1–20 letters');
+    if (pass.length < 4) return toast('Password min 4 characters');
+    if (!user) return toast('Still signing in…');
+    rememberName(name);
     const code = Math.random().toString(36).substring(2, 8).toUpperCase();
     const hash = await hashPass(code, pass);
 
-    // Ensure dice exist
     const room = {
         hostUid: user.uid,
         passHash: hash,
@@ -350,7 +631,7 @@ async function createRoom() {
         enterRoom(code, name);
     } catch (e) {
         console.error('Create room error:', e);
-        alert('Error: ' + e.message);
+        toast('Could not create the room');
     }
 }
 
@@ -358,25 +639,26 @@ async function joinRoom() {
     const name = $('#join-name').value.trim();
     const code = $('#join-code').value.trim().toUpperCase();
     const pass = $('#join-pass').value.trim();
-    if (!name || name.length > 20) return alert('Name 1-20 chars');
-    if (!code || !pass) return alert('Code and password required');
-    if (!user) return alert('Auth not ready');
+    if (!name || name.length > 20) return toast('Name must be 1–20 letters');
+    if (!code || !pass) return toast('Code and password required');
+    if (!user) return toast('Still signing in…');
+    rememberName(name);
 
     let hash;
     try {
         hash = await hashPass(code, pass);
     } catch (e) {
         console.error('Hash failed', e);
-        alert('Crypto error');
+        toast('Could not lock the seal');
         return;
     }
 
     try {
         const snap = await get(ref(db, `rooms/${code}`));
-        if (!snap.exists()) return alert('Room not found (incorrect code)');
+        if (!snap.exists()) return toast('No room with that code');
         const val = snap.val();
-        if (val.status !== 'waiting') return alert('Game already started');
-        if (val.passHash !== hash) return alert('Wrong password');
+        if (val.status !== 'waiting') return toast('That game already started');
+        if (val.passHash !== hash) return toast('Wrong password');
 
         const res = await runTransaction(ref(db, `rooms/${code}`), cur => {
             if (cur === null) return cur;
@@ -398,21 +680,21 @@ async function joinRoom() {
         if (res.committed) {
             enterRoom(code, name);
         } else {
-            // Check if user was already in (res.snapshot.val().players[user.uid])
-            // If so, join is successful logic-wise.
             const p = res.snapshot.val()?.players?.[user.uid];
             if (p) enterRoom(code, name);
-            else alert('Failed to join (room full or started)');
+            else toast('Room full, or already underway');
         }
     } catch (e) {
         console.error('Join error:', e);
-        alert('Join error: ' + e.message);
+        toast('Could not join');
     }
 }
 
 function enterRoom(code, name) {
     roomId = code;
-    $('#chat-trigger').classList.remove('hidden');
+    lastSeenRollCount = -1;
+    prevScores = {};
+    showChatTriggers(true);
     const roomRef = ref(db, `rooms/${code}`);
     const presRef = ref(db, `rooms/${code}/presence/${user.uid}`);
     const connRef = ref(db, '.info/connected');
@@ -433,13 +715,31 @@ function enterRoom(code, name) {
     }, { onlyOnce: true });
 }
 
+function confirmLeave(force) {
+    if (!force && roomData?.status === 'playing') {
+        if (!leaveArmed) {
+            leaveArmed = true;
+            toast('Tap leave again to confirm');
+            setTimeout(() => { leaveArmed = false; }, 2500);
+            return;
+        }
+    }
+    leaveArmed = false;
+    leaveRoom();
+}
+
 function leaveRoom() {
     unsub.forEach(fn => { if (typeof fn === 'function') fn(); });
     unsub = [];
     if (db && roomId && user) set(ref(db, `rooms/${roomId}/presence/${user.uid}`), null).catch(() => { });
     roomId = null; roomData = null;
-    $('#chat-trigger').classList.add('hidden');
+    lastSeenRollCount = -1;
+    prevScores = {};
+    showChatTriggers(false);
     $('#chat-drawer').classList.remove('open');
+    $('#chat-backdrop').classList.remove('open');
+    $('#win-overlay').classList.add('hidden');
+    chatOpen = false;
     showScreen('landing');
 }
 
@@ -466,18 +766,15 @@ async function restartGame() {
         if (cur.status !== 'finished' || cur.lastActionId === actionId) return;
         cur.lastActionId = actionId;
 
-        // Reset game state
         cur.status = 'waiting';
         cur.winnerUid = null;
         cur.turnIndex = 0;
         cur.turnUid = cur.playerOrder?.['0'] || user.uid;
 
-        // Reset all player scores
         Object.keys(cur.players).forEach(uid => {
             cur.players[uid].score = 0;
         });
 
-        // Reset game data
         cur.game = {
             dice: Array(NUM_DICE).fill(0).map(() => ({ value: '6', held: false, scoring: false })),
             turnScore: 0,
@@ -524,114 +821,207 @@ function renderChat(msgs) {
 }
 
 function updateUnreadBadge() {
-    const trigger = $('#chat-trigger');
-    if (!trigger || !user) return;
-    if (!chatMessages || chatOpen) { trigger.classList.remove('unread'); return; }
-    const unread = Object.values(chatMessages).filter(m => m.createdAt > lastSeenChatAt && m.senderUid !== user.uid).length;
-    trigger.classList.toggle('unread', unread > 0);
+    if (!user) return;
+    const unread = chatMessages && !chatOpen
+        ? Object.values(chatMessages).filter(m => m.createdAt > lastSeenChatAt && m.senderUid !== user.uid).length
+        : 0;
+    ['#chat-trigger', '#chat-trigger-lobby'].forEach(sel => {
+        const trigger = $(sel);
+        if (!trigger) return;
+        if (!unread) trigger.classList.remove('unread');
+        else trigger.classList.add('unread');
+    });
 }
 
 function toggleChat() {
-    $('#chat-drawer').classList.toggle('open');
     chatOpen = !chatOpen;
+    $('#chat-drawer').classList.toggle('open', chatOpen);
+    $('#chat-backdrop').classList.toggle('open', chatOpen);
     if (chatOpen) {
         updateLastSeenAt();
         $('#chat-trigger').classList.remove('unread');
+        setTimeout(() => $('#chat-input')?.focus(), 250);
     }
 }
 
 function showRules() { $('#modal-rules').classList.remove('hidden'); }
 function hideRules() { $('#modal-rules').classList.add('hidden'); }
 
+async function shareRoom() {
+    if (!roomId) return;
+    const text = `Join my 5000 Firenze game. Code: ${roomId}`;
+    if (navigator.share) {
+        try {
+            await navigator.share({ title: '5000 — Firenze', text });
+            return;
+        } catch { /* cancelled */ }
+    }
+    await copyText(roomId);
+    toast('Code copied');
+}
+
+function fillDust() {
+    const dust = $('#dust');
+    if (!dust) return;
+    dust.innerHTML = '';
+    for (let i = 0; i < 18; i++) {
+        const el = document.createElement('i');
+        el.style.left = Math.random() * 100 + '%';
+        el.style.animationDuration = 10 + Math.random() * 14 + 's';
+        el.style.animationDelay = (-Math.random() * 16) + 's';
+        el.style.width = el.style.height = (1.5 + Math.random() * 2) + 'px';
+        dust.appendChild(el);
+    }
+}
+
 function buildUI() {
     $('#app').innerHTML = `
-    <!-- Landing -->
+    <div class="dust" id="dust" aria-hidden="true"></div>
+
     <div id="screen-landing" class="screen active">
-      <div class="info-icon" id="btn-info">i</div>
-      <div class="center">
-        <h1 class="hand text-center" style="font-size:4.5rem;margin:0">5000</h1>
-        <p class="hand text-center" style="font-size:1.5rem;color:var(--ink-light);margin-top:0">Multiplayer Dice</p>
-        <div class="max-w-sm" style="margin-top:40px">
-          <button class="btn btn-blue" id="btn-go-create">Create Game</button>
-          <button class="btn" id="btn-go-join">Join Game</button>
-        </div>
-        <div style="font-size:0.8rem;color:#ccc;margin-top:20px">v17</div>
+      <button class="info-icon" id="btn-info" type="button" aria-label="How to play">i</button>
+      <div class="hero">
+        <h1>5000</h1>
+        <p class="sub">Firenze</p>
+        <div class="ornament"><span class="line"></span><span class="giglio-sm"></span><span class="line"></span></div>
+        <p class="tag">Ivory dice · the palazzo of luck</p>
+      </div>
+      <div class="landing-actions">
+        <button class="btn btn-gold" id="btn-go-create">Create a room</button>
+        <button class="btn btn-ghost" id="btn-go-join">Join a room</button>
       </div>
     </div>
-    <!-- Create -->
+
     <div id="screen-create" class="screen">
-      <h2 class="hand" style="font-size:2rem">Create Room</h2>
+      <div class="topbar">
+        <button class="icon-btn" id="btn-back-create" type="button" aria-label="Back">${ICONS.back}</button>
+        <div class="brand-mini">Firenze</div>
+        <span style="width:44px"></span>
+      </div>
+      <h2 class="screen-heading">Open a table</h2>
       <div class="card max-w-sm">
-        <label class="hand">Display Name</label>
-        <input id="create-name" maxlength="20" placeholder="Your Name">
-        <label class="hand">Room Password</label>
-        <input id="create-pass" type="password" placeholder="Min 4 chars">
-        <button class="btn btn-blue" id="btn-create">Create</button>
-        <button class="btn" id="btn-back-create">Back</button>
+        <label for="create-name">Display name</label>
+        <input id="create-name" maxlength="20" placeholder="Your name" autocomplete="nickname" enterkeyhint="next">
+        <label for="create-pass">Room password</label>
+        <input id="create-pass" type="password" placeholder="At least 4 characters" autocomplete="off" enterkeyhint="go">
+        <button class="btn btn-gold" id="btn-create">Create</button>
       </div>
     </div>
-    <!-- Join -->
+
     <div id="screen-join" class="screen">
-      <h2 class="hand" style="font-size:2rem">Join Room</h2>
+      <div class="topbar">
+        <button class="icon-btn" id="btn-back-join" type="button" aria-label="Back">${ICONS.back}</button>
+        <div class="brand-mini">Firenze</div>
+        <span style="width:44px"></span>
+      </div>
+      <h2 class="screen-heading">Take a seat</h2>
       <div class="card max-w-sm">
-        <label class="hand">Display Name</label>
-        <input id="join-name" maxlength="20" placeholder="Your Name">
-        <label class="hand">Room Code</label>
-        <input id="join-code" maxlength="10" placeholder="ABCDEF" style="text-transform:uppercase">
-        <label class="hand">Room Password</label>
-        <input id="join-pass" type="password" placeholder="Password">
-        <button class="btn btn-blue" id="btn-join">Join</button>
-        <button class="btn" id="btn-back-join">Back</button>
+        <label for="join-name">Display name</label>
+        <input id="join-name" maxlength="20" placeholder="Your name" autocomplete="nickname" enterkeyhint="next">
+        <label for="join-code">Room code</label>
+        <input id="join-code" maxlength="10" placeholder="ABCDEF" style="text-transform:uppercase" autocapitalize="characters" enterkeyhint="next">
+        <label for="join-pass">Room password</label>
+        <input id="join-pass" type="password" placeholder="Password" autocomplete="off" enterkeyhint="go">
+        <button class="btn btn-gold" id="btn-join">Join</button>
       </div>
     </div>
-    <!-- Lobby -->
+
     <div id="screen-lobby" class="screen">
-      <h2 class="hand" style="font-size:2rem">Lobby: <span id="lobby-code" style="color:var(--accent)"></span></h2>
+      <div class="topbar">
+        <button class="icon-btn" id="btn-leave-lobby" type="button" aria-label="Leave">${ICONS.leave}</button>
+        <div class="brand-mini">Lobby</div>
+        <button class="icon-btn hidden" id="chat-trigger-lobby" type="button" aria-label="Chat">${ICONS.chat}</button>
+      </div>
+      <button class="code-seal" id="lobby-share" type="button">
+        <span class="code-label">Room code</span>
+        <span id="lobby-code"></span>
+        <span class="code-hint">Tap to share</span>
+      </button>
       <div class="card">
-        <p class="hand" style="color:var(--ink-light)">Share the code + password!</p>
+        <p class="text-center" style="margin-top:0;font-style:italic;color:var(--ink-soft)">Share the code and password. The host opens the throw.</p>
         <ul class="player-list" id="lobby-players"></ul>
       </div>
       <div class="mt-auto">
-        <button class="btn btn-green hidden" id="btn-start">Start Game</button>
-        <button class="btn btn-red" id="btn-leave-lobby" onclick="window.leaveRoom()">Leave</button>
+        <button class="btn btn-green hidden" id="btn-start">Start the game</button>
       </div>
     </div>
-    <!-- Game -->
+
     <div id="screen-game" class="screen">
+      <div class="topbar">
+        <button class="icon-btn" id="btn-leave-game" type="button" aria-label="Leave">${ICONS.leave}</button>
+        <div class="brand-mini">5000</div>
+        <button class="icon-btn hidden" id="chat-trigger" type="button" aria-label="Chat">${ICONS.chat}</button>
+      </div>
       <div class="game-header">
-        <div><span class="hand" style="color:var(--ink-light)">Target</span><div style="font-size:1.3rem;font-weight:bold">5000</div></div>
-        <div style="text-align:right"><span class="hand" id="turn-label" style="color:var(--accent)"></span><div id="turn-score" style="font-size:1.8rem;font-weight:bold">+0</div></div>
+        <div><div class="label">Target</div><div class="target">5000</div></div>
+        <div style="text-align:right"><div id="turn-label"></div><div id="turn-score">+0</div></div>
       </div>
       <div class="score-cards" id="score-cards"></div>
-      <div class="dice-row" id="dice-row"></div>
-      <div class="msg" id="game-msg"></div>
-      <div id="game-controls" class="mt-auto"></div>
+      <div class="legend">A 100 · K 50 · AAA 1000 · KKK 500 · QQQ 400 · JJJ 300 · 777 200 · 666 100 · bank exactly 5000</div>
+      <div class="dice-table" id="dice-table">
+        <div class="dice-board">
+          <div class="dice-zone scoring-zone hidden" id="zone-scoring">
+            <div class="zone-label">Scoring <span id="scoring-hint"></span></div>
+            <div class="dice-row" id="dice-kept"></div>
+          </div>
+          <div class="dice-zone table-zone" id="zone-table">
+            <div class="zone-label" id="table-hint">On the table</div>
+            <div class="dice-row" id="dice-free"></div>
+          </div>
+        </div>
+      </div>
+      <div class="msg" id="game-msg" aria-live="polite"></div>
+      <div class="hint" id="action-hint"></div>
+      <div id="game-controls"></div>
     </div>
-    <!-- Chat -->
-    <div id="chat-trigger" class="chat-trigger hidden">💬</div>
+
+    <div id="chat-backdrop" class="chat-backdrop"></div>
     <div id="chat-drawer" class="chat-drawer">
-      <div style="display:flex;justify-content:space-between;border-bottom:1px solid #eee;margin-bottom:6px"><b class="hand">Chat</b><span id="chat-close" style="cursor:pointer">✕</span></div>
+      <div class="chat-handle"></div>
+      <div class="chat-head"><span>Table talk</span><span id="chat-close">✕</span></div>
       <div class="chat-msgs" id="chat-msgs"></div>
-      <div class="chat-input-row"><input id="chat-input" placeholder="Say something..."><button class="btn btn-blue" id="btn-chat-send">Send</button></div>
+      <div class="chat-input-row"><input id="chat-input" maxlength="200" placeholder="A word across the table…" enterkeyhint="send"><button class="btn btn-gold" id="btn-chat-send">Send</button></div>
     </div>
-    <!-- Rules Modal -->
+
     <div id="modal-rules" class="modal-overlay hidden">
       <div class="modal">
         <div class="modal-close" id="modal-close">✕</div>
-        <h2 class="hand" style="font-size:2rem;color:var(--accent);margin-top:0">How to Play</h2>
-        <p class="hand" style="font-size:1.1rem">Grab some friends and test your luck! First to reach <b>exactly 5000</b> wins.</p>
-        <ul class="rules-list hand" style="font-size:1rem">
-          <li><b>Get on the board:</b> You need <b>600 points</b> in one turn to start scoring.</li>
+        <div class="giglio" style="margin:0 auto 8px"></div>
+        <h2>How to play</h2>
+        <p>First to reach <b>exactly 5000</b> wins the palazzo. Overshoot, and the throw is wasted.</p>
+        <ul class="rules-list">
+          <li><b>Enter the board:</b> bank <b>600</b> in a single turn before any points count.</li>
           <li><b>Singles:</b> A = 100, K = 50.</li>
-          <li><b>Triples:</b> Three of a kind (AAA = 1000, KKK = 500, etc).</li>
-          <li><b>Hot Dice:</b> If all 5 dice score, reset and keep rolling!</li>
-          <li><b>Farkle:</b> Roll 0 points = lose turn progress.</li>
-          <li><b>Bump:</b> Bank the exact same total as someone else? They reset to 0!</li>
+          <li><b>Triples:</b> three of a kind (AAA = 1000, KKK = 500, and so on).</li>
+          <li><b>Hot Dice:</b> all five score — keep the cup and throw again.</li>
+          <li><b>Farkle:</b> a throw with no points loses the turn.</li>
+          <li><b>Bump:</b> bank the exact total another player holds, and they fall to 0.</li>
         </ul>
-        <p class="hand text-center" style="margin-top:20px;font-size:1.2rem;color:var(--green)">Ready to roll? Let's go! 🎲</p>
+        <p class="text-center" style="margin-top:18px;font-style:italic;color:var(--gold-dim)">Scoring dice sit on the gold shelf. Tap one to throw it again. Grey dice scored nothing.</p>
       </div>
     </div>
+
+    <div id="win-overlay" class="win-overlay hidden">
+      <div class="win-plaque">
+        <div class="giglio" style="margin:0 auto"></div>
+        <h2>Triumph</h2>
+        <p class="winner" id="win-name"></p>
+        <div id="win-actions"></div>
+      </div>
+    </div>
+
+    <div id="toast" class="toast" role="status"></div>
   `;
+
+    fillDust();
+    mountDice();
+
+    const name = savedName();
+    if (name) {
+        $('#create-name').value = name;
+        $('#join-name').value = name;
+    }
+
     $('#btn-info').onclick = showRules;
     $('#modal-close').onclick = hideRules;
     $('#modal-rules').onclick = e => { if (e.target.id === 'modal-rules') hideRules(); };
@@ -642,24 +1032,55 @@ function buildUI() {
     $('#btn-create').onclick = createRoom;
     $('#btn-join').onclick = joinRoom;
     $('#btn-start').onclick = startGame;
-    $('#btn-leave-lobby').onclick = leaveRoom;
+    $('#btn-leave-lobby').onclick = () => confirmLeave(true);
+    $('#btn-leave-game').onclick = () => confirmLeave(false);
+    $('#lobby-share').onclick = shareRoom;
     $('#chat-trigger').onclick = toggleChat;
+    $('#chat-trigger-lobby').onclick = toggleChat;
     $('#chat-close').onclick = toggleChat;
+    $('#chat-backdrop').onclick = toggleChat;
     $('#btn-chat-send').onclick = sendChat;
     $('#chat-input').onkeydown = e => { if (e.key === 'Enter') sendChat(); };
+    $('#create-pass').onkeydown = e => { if (e.key === 'Enter') createRoom(); };
+    $('#join-pass').onkeydown = e => { if (e.key === 'Enter') joinRoom(); };
+}
+
+function wireLobbyChatAlias() {
+    const a = $('#chat-trigger');
+    const b = $('#chat-trigger-lobby');
+    if (!a || !b) return;
+    const sync = () => {
+        b.classList.toggle('hidden', a.classList.contains('hidden'));
+        b.classList.toggle('unread', a.classList.contains('unread'));
+    };
+    const obs = new MutationObserver(sync);
+    obs.observe(a, { attributes: true, attributeFilter: ['class'] });
+    sync();
 }
 
 function init() {
     const cfg = window.FIREBASECONFIG;
     if (!cfg || !cfg.apiKey || cfg.apiKey === 'PLACEHOLDER') {
-        document.body.innerHTML = '<div style="padding:40px;text-align:center;font-family:sans-serif"><h2>⚠️ Missing Firebase Config</h2><p>Create <code>config.js</code> locally or set GitHub Secrets for deployment.</p></div>';
+        document.body.innerHTML = '<div style="padding:40px;text-align:center;font-family:Cinzel,serif;color:#f3e6c9"><h2>Missing Firebase config</h2><p>Create <code>config.js</code> locally or set GitHub Secrets for deployment.</p></div>';
         return;
+    }
+    setAppHeight();
+    window.addEventListener('resize', setAppHeight);
+    if (window.visualViewport) {
+        window.visualViewport.addEventListener('resize', syncKeyboardInset);
+        window.visualViewport.addEventListener('scroll', syncKeyboardInset);
     }
     const app = initializeApp(cfg);
     auth = getAuth(app);
     db = getDatabase(app);
     signInAnonymously(auth).catch(e => console.error('Auth error', e));
-    onAuthStateChanged(auth, u => { user = u; if (u) buildUI(); });
+    onAuthStateChanged(auth, u => {
+        user = u;
+        if (u) {
+            buildUI();
+            wireLobbyChatAlias();
+        }
+    });
 }
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => { });
