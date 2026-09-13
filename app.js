@@ -25,6 +25,8 @@ let lastSeenChatAt = 0, chatMessages = null, updateLastSeenDebounce = null;
 let lastSeenRollCount = -1;
 let prevScores = {};
 let leaveArmed = false;
+const dieAnims = Array.from({ length: NUM_DICE }, () => ({ interval: 0, wait: 0 }));
+let landTimer = 0;
 let toastTimer = 0;
 let audioCtx = null;
 const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -200,29 +202,17 @@ function mountDice() {
     ROLL_FRAMES.forEach(src => { const im = new Image(); im.src = src; });
 }
 
-function startDieRoll(el, delay) {
-    if (reduceMotion) return;
-    const img = el.querySelector('.die-body');
-    const letter = el.querySelector('.die-letter');
-    el.classList.add('rolling');
-    el.classList.remove('held', 'dead', 'scoring', 'tappable', 'landing');
-    letter.style.opacity = '0';
-    let f = Math.floor(Math.random() * ROLL_FRAMES.length);
-    const tick = () => {
-        f = (f + 1) % ROLL_FRAMES.length;
-        img.src = ROLL_FRAMES[f];
-    };
-    const go = () => {
-        tick();
-        el._roll = setInterval(tick, 55);
-    };
-    if (delay) el._rollWait = setTimeout(go, delay);
-    else go();
+function clearDieAnim(i) {
+    const a = dieAnims[i];
+    if (!a) return;
+    if (a.wait) { clearTimeout(a.wait); a.wait = 0; }
+    if (a.interval) { clearInterval(a.interval); a.interval = 0; }
 }
 
 function stopDieRoll(el, value) {
-    if (el._rollWait) { clearTimeout(el._rollWait); el._rollWait = null; }
-    if (el._roll) { clearInterval(el._roll); el._roll = null; }
+    if (!el) return;
+    const i = Number(el.dataset.i);
+    clearDieAnim(i);
     el.classList.remove('rolling');
     const img = el.querySelector('.die-body');
     const letter = el.querySelector('.die-letter');
@@ -232,6 +222,44 @@ function stopDieRoll(el, value) {
         letter.classList.toggle('royal', 'AKQJ'.includes(value));
         letter.style.opacity = '1';
     }
+}
+
+function stopAllDieRolls(values) {
+    if (landTimer) { clearTimeout(landTimer); landTimer = 0; }
+    $$('.die').forEach(el => {
+        const i = Number(el.dataset.i);
+        stopDieRoll(el, values?.[i] ?? el.querySelector('.die-letter')?.textContent ?? '6');
+    });
+    dieAnims.forEach((_, i) => clearDieAnim(i));
+}
+
+function startDieRoll(el, delay) {
+    if (!el) return;
+    const i = Number(el.dataset.i);
+    const letterNow = el.querySelector('.die-letter')?.textContent;
+    stopDieRoll(el, letterNow);
+    if (reduceMotion) return;
+    const img = el.querySelector('.die-body');
+    const letter = el.querySelector('.die-letter');
+    el.classList.add('rolling');
+    el.classList.remove('held', 'dead', 'scoring', 'tappable', 'landing');
+    if (letter) letter.style.opacity = '0';
+    let f = Math.floor(Math.random() * ROLL_FRAMES.length);
+    const tick = () => {
+        if (!img || !el.classList.contains('rolling')) {
+            clearDieAnim(i);
+            return;
+        }
+        f = (f + 1) % ROLL_FRAMES.length;
+        img.src = ROLL_FRAMES[f];
+    };
+    const go = () => {
+        dieAnims[i].wait = 0;
+        tick();
+        dieAnims[i].interval = setInterval(tick, 55);
+    };
+    if (delay > 0) dieAnims[i].wait = setTimeout(go, delay);
+    else go();
 }
 
 function tumbleUnheld(dice) {
@@ -244,7 +272,10 @@ function tumbleUnheld(dice) {
     dice.forEach((d, i) => {
         const el = dieEl(i);
         if (!el) return;
-        if (!allHeld && d.held) return;
+        if (!allHeld && d.held) {
+            stopDieRoll(el, d.value);
+            return;
+        }
         free.appendChild(el);
         startDieRoll(el, reduceMotion ? 0 : i * 70);
     });
@@ -276,7 +307,7 @@ function updateDice(dice, { incoming = false, land = false } = {}) {
         const el = dieEl(i);
         if (!el) return;
         if (rolling && !land && (!d.held || allHeld)) return;
-        const wasRolling = el.classList.contains('rolling') || !!el._roll;
+        const wasRolling = el.classList.contains('rolling') || !!dieAnims[i]?.interval;
         stopDieRoll(el, d.value);
         if ((incoming || land || wasRolling) && !reduceMotion) {
             el.classList.add('landing');
@@ -369,7 +400,7 @@ function renderGame(opts = {}) {
     table.classList.toggle('farkle', /farkle/i.test(msg) && !rolling);
 
     const incoming = !rolling && !opts.land && (g.rollCount || 0) > 0 && g.rollCount !== lastSeenRollCount;
-    if (rolling && !opts.land) {
+    if ((rolling || (landTimer && !incoming)) && !opts.land) {
         renderControls(g, isMyTurn, turnPlayer);
         showChatTriggers(true);
         return;
@@ -378,11 +409,14 @@ function renderGame(opts = {}) {
     if (incoming && !reduceMotion) {
         tumbleUnheld(dice);
         sfxRoll();
-        setTimeout(() => {
+        if (landTimer) clearTimeout(landTimer);
+        landTimer = setTimeout(() => {
+            landTimer = 0;
             updateDice(normalizeDice(roomData?.game?.dice), { land: true });
             sfxLand();
         }, 1050);
     } else {
+        if (opts.land) stopAllDieRolls(dice.map(d => d.value));
         updateDice(dice, { land: !!opts.land });
         if (opts.land) sfxLand();
     }
@@ -759,6 +793,7 @@ function leaveRoom() {
     roomId = null; roomData = null;
     lastSeenRollCount = -1;
     prevScores = {};
+    stopAllDieRolls();
     showChatTriggers(false);
     $('#chat-drawer').classList.remove('open');
     $('#chat-backdrop').classList.remove('open');

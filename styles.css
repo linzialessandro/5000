@@ -567,6 +567,10 @@ label {
     animation: hop 0.38s ease-in-out infinite;
 }
 
+.die:not(.rolling) .die-sprite {
+    animation: none;
+}
+
 @keyframes hop {
     0%, 100% { transform: translateY(0); }
     50% { transform: translateY(-10px); }
