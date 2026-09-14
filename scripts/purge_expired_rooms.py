@@ -1,21 +1,99 @@
 #!/usr/bin/env python3
 """Delete Realtime Database rooms whose expiresAt (or createdAt + 7d) has passed."""
+import base64
 import json
 import os
+import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 BASE = "https://project-4459811601599530195-default-rtdb.europe-west1.firebasedatabase.app"
 TTL_MS = 7 * 24 * 60 * 60 * 1000
+SCOPES = (
+    "https://www.googleapis.com/auth/firebase.database "
+    "https://www.googleapis.com/auth/userinfo.email"
+)
+TOKEN_URI = "https://oauth2.googleapis.com/token"
+
+
+def b64url(data):
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def token_from_service_account(path):
+    """Mint an OAuth token from a service-account JSON key (no IAM Credentials API)."""
+    with open(path) as f:
+        sa = json.load(f)
+    now = int(time.time())
+    header = b64url(json.dumps({"alg": "RS256", "typ": "JWT"}, separators=(",", ":")).encode())
+    claim = b64url(
+        json.dumps(
+            {
+                "iss": sa["client_email"],
+                "scope": SCOPES,
+                "aud": sa.get("token_uri", TOKEN_URI),
+                "iat": now,
+                "exp": now + 3600,
+            },
+            separators=(",", ":"),
+        ).encode()
+    )
+    signing_input = f"{header}.{claim}".encode()
+    fd, key_path = tempfile.mkstemp(suffix=".pem")
+    try:
+        os.write(fd, sa["private_key"].encode())
+        os.close(fd)
+        os.chmod(key_path, 0o600)
+        sig = subprocess.check_output(
+            ["openssl", "dgst", "-sha256", "-sign", key_path],
+            input=signing_input,
+        )
+    finally:
+        try:
+            os.remove(key_path)
+        except OSError:
+            pass
+    assertion = f"{header}.{claim}.{b64url(sig)}"
+    body = urllib.parse.urlencode(
+        {
+            "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+            "assertion": assertion,
+        }
+    ).encode()
+    req = urllib.request.Request(
+        sa.get("token_uri", TOKEN_URI),
+        data=body,
+        method="POST",
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    with urllib.request.urlopen(req) as resp:
+        payload = json.loads(resp.read())
+    access = payload.get("access_token")
+    if not access:
+        raise RuntimeError(f"token endpoint returned no access_token: {list(payload)}")
+    return access
+
+
+_cached_token = None
 
 
 def token():
+    global _cached_token
+    if _cached_token:
+        return _cached_token
     t = os.environ.get("GOOGLE_ACCESS_TOKEN")
-    if not t:
-        sys.exit("GOOGLE_ACCESS_TOKEN is not set")
-    return t
+    if t:
+        _cached_token = t
+        return t
+    creds = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+    if creds and os.path.isfile(creds):
+        _cached_token = token_from_service_account(creds)
+        return _cached_token
+    sys.exit("GOOGLE_ACCESS_TOKEN is not set and GOOGLE_APPLICATION_CREDENTIALS is missing")
 
 
 def url(path):
