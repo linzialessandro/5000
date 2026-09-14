@@ -362,13 +362,25 @@ function renderLobby() {
     showChatTriggers(true);
 }
 
+function paintThrowResult(g, isMyTurn, turnPlayer) {
+    $('#turn-score').textContent = '+' + ((g.turnScore || 0) + (g.rollScore || 0));
+    const msg = g.message || '';
+    const msgEl = $('#game-msg');
+    msgEl.textContent = msg;
+    msgEl.classList.toggle('farkle', /farkle/i.test(msg));
+    msgEl.classList.toggle('hot', /hot dice/i.test(msg));
+    const table = $('#dice-table');
+    table.classList.toggle('hot', /hot dice/i.test(msg));
+    table.classList.toggle('farkle', /farkle/i.test(msg));
+    renderControls(g, isMyTurn, turnPlayer);
+}
+
 function renderGame(opts = {}) {
     showScreen('game');
     const g = roomData.game || {};
     const isMyTurn = user && roomData.turnUid === user.uid;
     const turnPlayer = roomData.players?.[roomData.turnUid];
     $('#turn-label').textContent = isMyTurn ? 'Your throw' : (turnPlayer?.name || '') + "'s throw";
-    $('#turn-score').textContent = '+' + ((g.turnScore || 0) + (g.rollScore || 0));
 
     const dice = normalizeDice(g.dice);
 
@@ -389,19 +401,8 @@ function renderGame(opts = {}) {
         prevScores[uid] = p.score;
     });
 
-    const msg = g.message || '';
-    const msgEl = $('#game-msg');
-    msgEl.textContent = msg;
-    msgEl.classList.toggle('farkle', /farkle/i.test(msg));
-    msgEl.classList.toggle('hot', /hot dice/i.test(msg));
-
-    const table = $('#dice-table');
-    table.classList.toggle('hot', /hot dice/i.test(msg) && !rolling);
-    table.classList.toggle('farkle', /farkle/i.test(msg) && !rolling);
-
     const incoming = !rolling && !opts.land && (g.rollCount || 0) > 0 && g.rollCount !== lastSeenRollCount;
     if ((rolling || (landTimer && !incoming)) && !opts.land) {
-        renderControls(g, isMyTurn, turnPlayer);
         showChatTriggers(true);
         return;
     }
@@ -412,16 +413,18 @@ function renderGame(opts = {}) {
         if (landTimer) clearTimeout(landTimer);
         landTimer = setTimeout(() => {
             landTimer = 0;
-            updateDice(normalizeDice(roomData?.game?.dice), { land: true });
+            const gNow = roomData?.game || {};
+            updateDice(normalizeDice(gNow.dice), { land: true });
+            paintThrowResult(gNow, user && roomData.turnUid === user.uid, roomData.players?.[roomData.turnUid]);
             sfxLand();
         }, 1050);
-    } else {
-        if (opts.land) stopAllDieRolls(dice.map(d => d.value));
-        updateDice(dice, { land: !!opts.land });
-        if (opts.land) sfxLand();
+        showChatTriggers(true);
+        return;
     }
-
-    renderControls(g, isMyTurn, turnPlayer);
+    if (opts.land) stopAllDieRolls(dice.map(d => d.value));
+    updateDice(dice, { land: !!opts.land });
+    if (opts.land) sfxLand();
+    paintThrowResult(g, isMyTurn, turnPlayer);
 
     const win = $('#win-overlay');
     if (roomData.status === 'finished') {
@@ -1018,7 +1021,6 @@ function buildUI() {
         <div style="text-align:right"><div id="turn-label"></div><div id="turn-score">+0</div></div>
       </div>
       <div class="score-cards" id="score-cards"></div>
-      <div class="legend">A 100 · K 50 · AAA 1000 · KKK 500 · QQQ 400 · JJJ 300 · 777 200 · 666 100 · bank exactly 5000</div>
       <div class="dice-table" id="dice-table">
         <div class="dice-board">
           <div class="dice-zone scoring-zone hidden" id="zone-scoring">

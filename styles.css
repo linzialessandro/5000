@@ -750,22 +750,6 @@ label {
     transition: width 0.5s ease;
 }
 
-.legend {
-    overflow-x: auto;
-    white-space: nowrap;
-    font-size: 0.78rem;
-    letter-spacing: 0.04em;
-    color: rgba(232, 197, 71, 0.78);
-    text-align: center;
-    padding: 2px 0 6px;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
-}
-
-.legend::-webkit-scrollbar {
-    display: none;
-}
-
 .msg {
     text-align: center;
     font-style: italic;
@@ -1149,7 +1133,6 @@ label {
     }
     .dice-table { padding: 8px 8px 12px; margin: 4px 0; }
     .score-cards { padding: 4px 0 6px; }
-    .legend { display: none; }
     .msg { font-size: 1.05rem; margin: 2px 0; }
 }
 
