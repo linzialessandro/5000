@@ -19,11 +19,15 @@ def token():
 
 
 def url(path):
-    return f"{BASE}{path}.json?access_token={token()}"
+    return f"{BASE}{path}.json"
 
 
 def req(method, path):
-    r = urllib.request.Request(url(path), method=method)
+    r = urllib.request.Request(
+        url(path),
+        method=method,
+        headers={"Authorization": f"Bearer {token()}"},
+    )
     try:
         with urllib.request.urlopen(r) as resp:
             raw = resp.read()
